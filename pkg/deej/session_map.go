@@ -81,8 +81,64 @@ func (m *sessionMap) initialize() error {
 
 	m.setupOnConfigReload()
 	m.setupOnSliderMove()
+	m.setupOnButtonPress()
 
 	return nil
+}
+
+func (m *sessionMap) setupOnButtonPress() {
+	buttonEventsChannel := m.deej.serial.SubscribeToButtonEvents()
+
+	go func() {
+		for {
+			select {
+			case event := <-buttonEventsChannel:
+				if event.Pressed {
+					m.MuteSessionsForSlider(event.ButtonID)
+				}
+			}
+		}
+	}()
+}
+
+// MuteSessionsForSlider sets mapped sessions for the given slider index to 0.0 (used as a mute)
+func (m *sessionMap) MuteSessionsForSlider(sliderID int) {
+	targets, ok := m.deej.config.SliderMapping.get(sliderID)
+	if !ok {
+		return
+	}
+
+	targetFound := false
+	adjustmentFailed := false
+
+	for _, target := range targets {
+		resolvedTargets := m.resolveTarget(target)
+
+		for _, resolvedTarget := range resolvedTargets {
+			sessions, ok := m.get(resolvedTarget)
+			if !ok {
+				continue
+			}
+
+			targetFound = true
+
+			for _, session := range sessions {
+				// only set if different to avoid noisy calls
+				if session.GetVolume() != 0.0 {
+					if err := session.SetVolume(0.0); err != nil {
+						m.logger.Warnw("Failed to mute target session", "error", err)
+						adjustmentFailed = true
+					}
+				}
+			}
+		}
+	}
+
+	if !targetFound {
+		m.refreshSessions(false)
+	} else if adjustmentFailed {
+		m.refreshSessions(true)
+	}
 }
 
 func (m *sessionMap) release() error {

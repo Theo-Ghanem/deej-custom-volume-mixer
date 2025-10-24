@@ -17,6 +17,7 @@ import (
 // as well as loading/file watching logic for deej's configuration file
 type CanonicalConfig struct {
 	SliderMapping *sliderMap
+	ButtonMapping map[int]string
 
 	ConnectionInfo struct {
 		COMPort  string
@@ -49,6 +50,7 @@ const (
 	configType = "yaml"
 
 	configKeySliderMapping       = "slider_mapping"
+	configKeyButtonMapping      = "button_mapping"
 	configKeyInvertSliders       = "invert_sliders"
 	configKeyCOMPort             = "com_port"
 	configKeyBaudRate            = "baud_rate"
@@ -86,6 +88,7 @@ func NewConfig(logger *zap.SugaredLogger, notifier Notifier) (*CanonicalConfig, 
 	userConfig.AddConfigPath(userConfigPath)
 
 	userConfig.SetDefault(configKeySliderMapping, map[string][]string{})
+	userConfig.SetDefault(configKeyButtonMapping, map[string]string{})
 	userConfig.SetDefault(configKeyInvertSliders, false)
 	userConfig.SetDefault(configKeyCOMPort, defaultCOMPort)
 	userConfig.SetDefault(configKeyBaudRate, defaultBaudRate)

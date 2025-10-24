@@ -31,8 +31,16 @@ type SerialIO struct {
 
 	lastKnownNumSliders        int
 	currentSliderPercentValues []float32
+	currentButtonStates        []bool
 
 	sliderMoveConsumers []chan SliderMoveEvent
+	buttonEventConsumers []chan ButtonEvent
+}
+
+// ButtonEvent represents a button state change captured by deej
+type ButtonEvent struct {
+	ButtonID int
+	Pressed  bool
 }
 
 // SliderMoveEvent represents a single slider move captured by deej
@@ -41,7 +49,7 @@ type SliderMoveEvent struct {
 	PercentValue float32
 }
 
-var expectedLinePattern = regexp.MustCompile(`^\d{1,4}(\|\d{1,4})*\r\n$`)
+var expectedLinePattern = regexp.MustCompile(`^\d{1,4}(\|\d{1,4})*;[01]+\r\n$`)
 
 // NewSerialIO creates a SerialIO instance that uses the provided deej
 // instance's connection info to establish communications with the arduino chip
@@ -146,6 +154,15 @@ func (sio *SerialIO) SubscribeToSliderMoveEvents() chan SliderMoveEvent {
 	return ch
 }
 
+// SubscribeToButtonEvents returns an unbuffered channel that receives
+// a ButtonEvent struct every time a button state changes
+func (sio *SerialIO) SubscribeToButtonEvents() chan ButtonEvent {
+	ch := make(chan ButtonEvent)
+	sio.buttonEventConsumers = append(sio.buttonEventConsumers, ch)
+
+	return ch
+}
+
 func (sio *SerialIO) setupOnConfigReload() {
 	configReloadedChannel := sio.deej.config.SubscribeToChanges()
 
@@ -238,8 +255,14 @@ func (sio *SerialIO) handleLine(logger *zap.SugaredLogger, line string) {
 	// trim the suffix
 	line = strings.TrimSuffix(line, "\r\n")
 
-	// split on pipe (|), this gives a slice of numerical strings between "0" and "1023"
-	splitLine := strings.Split(line, "|")
+	// split into sliders and buttons parts
+	parts := strings.Split(line, ";")
+	if len(parts) != 2 {
+		return
+	}
+
+	// process sliders
+	splitLine := strings.Split(parts[0], "|")
 	numSliders := len(splitLine)
 
 	// update our slider count, if needed - this will send slider move events for all
@@ -292,6 +315,46 @@ func (sio *SerialIO) handleLine(logger *zap.SugaredLogger, line string) {
 
 			if sio.deej.Verbose() {
 				logger.Debugw("Slider moved", "event", moveEvents[len(moveEvents)-1])
+			}
+		}
+	}
+
+	// process button states for every line (independent of slider movement)
+	buttonStates := parts[1]
+	numButtons := len(buttonStates)
+
+	// check for button state changes
+	buttonEvents := []ButtonEvent{}
+
+	// initialize or resize button states if needed
+	if len(sio.currentButtonStates) != numButtons {
+		newStates := make([]bool, numButtons)
+		copy(newStates, sio.currentButtonStates)
+		sio.currentButtonStates = newStates
+	}
+
+	for buttonIdx := 0; buttonIdx < numButtons; buttonIdx++ {
+		isPressed := buttonStates[buttonIdx] == '1'
+
+		// check for state change
+		if isPressed != sio.currentButtonStates[buttonIdx] {
+			sio.currentButtonStates[buttonIdx] = isPressed
+			buttonEvents = append(buttonEvents, ButtonEvent{
+				ButtonID: buttonIdx,
+				Pressed:  isPressed,
+			})
+
+			if sio.deej.Verbose() {
+				logger.Debugw("Button state changed", "event", buttonEvents[len(buttonEvents)-1])
+			}
+		}
+	}
+
+	// deliver button events if there are any
+	if len(buttonEvents) > 0 {
+		for _, consumer := range sio.buttonEventConsumers {
+			for _, buttonEvent := range buttonEvents {
+				consumer <- buttonEvent
 			}
 		}
 	}
