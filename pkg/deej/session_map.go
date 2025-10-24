@@ -23,6 +23,9 @@ type sessionMap struct {
 
 	lastSessionRefresh time.Time
 	unmappedSessions   []Session
+
+	// maps session keys to their volume before being muted
+	previousVolumes map[string]float32
 }
 
 const (
@@ -61,11 +64,12 @@ func newSessionMap(deej *Deej, logger *zap.SugaredLogger, sessionFinder SessionF
 	logger = logger.Named("sessions")
 
 	m := &sessionMap{
-		deej:          deej,
-		logger:        logger,
-		m:             make(map[string][]Session),
-		lock:          &sync.Mutex{},
-		sessionFinder: sessionFinder,
+		deej:           deej,
+		logger:         logger,
+		m:              make(map[string][]Session),
+		lock:           &sync.Mutex{},
+		sessionFinder:  sessionFinder,
+		previousVolumes: make(map[string]float32),
 	}
 
 	logger.Debug("Created session map instance")
@@ -101,7 +105,7 @@ func (m *sessionMap) setupOnButtonPress() {
 	}()
 }
 
-// MuteSessionsForSlider sets mapped sessions for the given slider index to 0.0 (used as a mute)
+// MuteSessionsForSlider toggles mute state for mapped sessions: mutes if unmuted, restores previous volume if muted
 func (m *sessionMap) MuteSessionsForSlider(sliderID int) {
 	targets, ok := m.deej.config.SliderMapping.get(sliderID)
 	if !ok {
@@ -123,11 +127,37 @@ func (m *sessionMap) MuteSessionsForSlider(sliderID int) {
 			targetFound = true
 
 			for _, session := range sessions {
-				// only set if different to avoid noisy calls
-				if session.GetVolume() != 0.0 {
+				currentVolume := session.GetVolume()
+				sessionKey := session.Key()
+
+				// If volume is 0, restore previous volume (unmute)
+				if currentVolume == 0.0 {
+					if previousVolume, exists := m.previousVolumes[sessionKey]; exists {
+						if err := session.SetVolume(previousVolume); err != nil {
+							m.logger.Warnw("Failed to restore volume for session", 
+								"error", err, 
+								"session", sessionKey,
+								"previousVolume", previousVolume)
+							adjustmentFailed = true
+						} else if m.deej.Verbose() {
+							m.logger.Debugw("Restored previous volume", 
+								"session", sessionKey,
+								"volume", previousVolume)
+						}
+						delete(m.previousVolumes, sessionKey)
+					}
+				} else {
+					// Store current volume and mute
+					m.previousVolumes[sessionKey] = currentVolume
 					if err := session.SetVolume(0.0); err != nil {
-						m.logger.Warnw("Failed to mute target session", "error", err)
+						m.logger.Warnw("Failed to mute session", 
+							"error", err,
+							"session", sessionKey)
 						adjustmentFailed = true
+					} else if m.deej.Verbose() {
+						m.logger.Debugw("Muted session", 
+							"session", sessionKey,
+							"previousVolume", currentVolume)
 					}
 				}
 			}
